@@ -1,17 +1,18 @@
 import * as functions from 'firebase-functions'
 import * as admin from 'firebase-admin'
+const memoryStore = require('@google-cloud/redis')
+const redis_client = require('redis')
 
 admin.initializeApp()
 
 const REDIS_PORT = 6379
 const REDIS_HOST = `10.0.0.3`
-const REDIS_NAME = `edis-zero-to-prod`
+const REDIS_NAME = `zero-to-prod-test`
 
 const firestore = admin.firestore()
 const ordersRef = firestore.collection(`orders`)
 
-const redisLib = require('redis')
-const client = redisLib.createClient(REDIS_PORT, REDIS_HOST)
+const client = redis_client.createClient(REDIS_PORT, REDIS_HOST)
 
 const fromCache = (key: string): Promise<string | null> => new Promise(async resolve => {
   if (client.connected === false) {
@@ -19,6 +20,12 @@ const fromCache = (key: string): Promise<string | null> => new Promise(async res
   } else {
     // @ts-ignore
     return await client.get(key, function(_err, reply) {
+      // not found, it will return null...
+      if (_err) {
+        // submit error logs 
+        resolve(null)
+        return
+      }
       resolve(reply)
     })
   }
@@ -26,11 +33,11 @@ const fromCache = (key: string): Promise<string | null> => new Promise(async res
 
 export const redis = functions.https.onRequest(async (req, res) => {
   const id = req.query.id
-  let response: string | null = await fromCache(id)
+  const response: string | null = await fromCache(id)
   if (response) {
     res.status(200).send(Object.assign({}, JSON.parse(response), { from: 'redis' }))
   } else {
-    let record = await ordersRef.doc(id).get().then(doc => doc.exists ? doc.data() : null)
+    const record = await ordersRef.doc(id).get().then(doc => doc.exists ? doc.data() : null)
     if (record) {
       if (client.connected === true) {
         await client.set(id, JSON.stringify(record))
@@ -41,6 +48,7 @@ export const redis = functions.https.onRequest(async (req, res) => {
     }
   }
 })
+
 
 export const cacheUpdate = functions
   .firestore.document(`orders/{doc}`).onWrite(async (change, _context) => {
@@ -65,9 +73,7 @@ export const cacheUpdate = functions
 })
 
 // Init instance at 7am based on server time, from Mond to Frid
-export const createInstance = functions.pubsub.schedule(`0 7 * * 1-5`).onRun(async () => {
-  const memoryStore = require('@google-cloud/redis')
-  
+export const createInstance = functions.pubsub.schedule(`0 7 * * 1-5`).onRun(async () => {  
   const memoryStoreClient = new memoryStore.v1.CloudRedisClient()
 
   const formattedParent = memoryStoreClient.locationPath(process.env.GCLOUD_PROJECT, process.env.FUNCTION_REGION);
@@ -89,10 +95,22 @@ export const createInstance = functions.pubsub.schedule(`0 7 * * 1-5`).onRun(asy
 
 // Terminate instance at 7pm based on server time, from Mond to Frid
 export const deleteInstance = functions.pubsub.schedule(`0 19 * * 1-5`).onRun(async () => {
-  const memoryStore = require('@google-cloud/redis')
   const memoryStoreClient = new memoryStore.v1.CloudRedisClient()
   const formattedName = memoryStoreClient.instancePath(process.env.GCLOUD_PROJECT, process.env.FUNCTION_REGION, REDIS_NAME);
   const [operation] = await memoryStoreClient.deleteInstance({name: formattedName});
   const [response] = await operation.promise();
   return Promise.resolve(response)
 })
+
+
+
+
+
+
+
+
+
+
+
+
+
